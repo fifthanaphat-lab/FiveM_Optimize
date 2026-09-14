@@ -1,13 +1,14 @@
+$exe = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+$scriptPath = $PSCommandPath; if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Path }
+$needRelaunch = $false
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $IsAdmin) {
+if (-not $IsAdmin) { $needRelaunch = $true }
+try { if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne "STA") { $needRelaunch = $true } } catch { $needRelaunch = $true }
+if ($needRelaunch -and $scriptPath) {
     try {
-        $scriptPath = $PSCommandPath; if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Path }
-        if (-not $scriptPath) {
-            # Path detection failed - will exit without elevation
-        } else {
-            Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-File","`"$scriptPath`"") -Verb RunAs; exit
-        }
-    } catch { }
+        Start-Process -FilePath $exe -ArgumentList "-NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File `"$scriptPath`"" -WorkingDirectory (Split-Path -Parent $scriptPath) -Verb RunAs | Out-Null
+    } catch {}
+    exit
 }
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase
 
@@ -1433,7 +1434,7 @@ $window.Add_Loaded({
     $pct=$Global:SysInfo.RAMUsedPct; $RamUsageFill.Width=[math]::Max(0,($pct/100.0)*$maxW); $RamUsageText.Text="$pct%"
     Play-StartupChime
     # Realtime update check against GitHub main (non-blocking)
-    try { Start-FiveMOptimizeUpdateCheck -AutoApply:$false } catch {}
+    try { Start-FiveMOptimizeUpdateCheck:$false } catch {}
 })
 $TopBar.Add_MouseLeftButtonDown({ $window.DragMove() })
 $BtnClose.Add_Click({ $window.Close() })
@@ -6119,23 +6120,13 @@ try {
     Add-Log ("Auto shortcut skipped: {0}" -f $_.Exception.Message) "#6B7280"
 }
 try {
-    $need = $true
-    foreach($g in @(Get-DetectedReshadeGames)){
-        if(Test-ReshadeInstalled -Folder $g.Folder){ $need = $false }
-    }
-    if($need){
-        Add-Log "Auto ReShade on startup..." "#A78BFA"
-        Run-ReshadeInstaller -Quiet
-    } else {
-        Add-Log "ReShade already present. Skip auto-install." "#6B7280"
-    }
-} catch {
-    Add-Log ("Auto ReShade skipped: {0}" -f $_.Exception.Message) "#6B7280"
-}
+    Add-Log "Ready. Use CHECK UPDATE for realtime updates." "#38BDF8"
+    Start-FiveMOptimizeUpdateCheck
+} catch {}
 try {
-    Add-Log "Realtime update check..." "#38BDF8"
-    Start-FiveMOptimizeUpdateCheck -AutoApply
+    $window.ShowDialog() | Out-Null
 } catch {
-    Add-Log ("Realtime update skipped: {0}" -f $_.Exception.Message) "#6B7280"
+    $msg = $_.Exception.Message
+    try { [System.Windows.MessageBox]::Show($msg, "FiveM Optimize") | Out-Null } catch { Write-Host $msg; Start-Sleep -Seconds 20 }
 }
-$window.ShowDialog()|Out-Null
+

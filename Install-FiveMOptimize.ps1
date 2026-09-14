@@ -154,7 +154,8 @@ if ([string]::IsNullOrWhiteSpace($exe)) {
 }
 $argList = @("-NoLogo","-NoProfile","-STA","-ExecutionPolicy","Bypass","-File",('"{0}"' -f $target))
 Start-Process -FilePath $exe -ArgumentList $argList -WorkingDirectory $installRoot -Verb RunAs | Out-Null
-Write-Step "Done." "Green"
+Write-Step "Launched. You can close this window." "Green"
+Start-Sleep -Seconds 5
 
 try {
     if (Test-Path -LiteralPath $tempRoot) {
