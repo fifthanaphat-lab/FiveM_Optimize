@@ -1,4 +1,4 @@
-$exe = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+﻿$exe = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
 $scriptPath = $PSCommandPath; if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Path }
 $needRelaunch = $false
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -104,7 +104,7 @@ function Install-FiveMOptimizeUpdate {
             if((Test-Path -LiteralPath $tmp) -and ((Get-Item -LiteralPath $tmp).Length -gt 50000)){ $ok = $true; break }
         } catch { $last = $_.Exception.Message }
     }
-    if(-not $ok){ throw ("ดาวน์โหลดอัปเดตไม่สำเร็จ: {0}" -f $last) }
+    if(-not $ok){ throw ("Update download failed: {0}" -f $last) }
     $newHash = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash
     $oldHash = $null
     if($self -and (Test-Path -LiteralPath $self)){ try { $oldHash = (Get-FileHash -LiteralPath $self -Algorithm SHA256).Hash } catch {} }
@@ -182,7 +182,7 @@ function Start-FiveMOptimizeUpdateCheck {
                 try { Add-Log ("Realtime update found (~{0:N1} MB)" -f ($r.Size/1MB)) "#38BDF8" } catch {}
                 $do = $state.AutoApply
                 if(-not $do){
-                    $ans = [System.Windows.MessageBox]::Show("พบเวอร์ชันใหม่ของ FiveM Optimize`nอัปเดตแล้วรีสตาร์ทเลยหรือไม่?","FiveM Optimize",[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Question)
+                    $ans = [System.Windows.MessageBox]::Show("New FiveM Optimize version found.`nUpdate and restart now?","FiveM Optimize",[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Question)
                     $do = ($ans -eq [System.Windows.MessageBoxResult]::Yes)
                 }
                 if($do){
