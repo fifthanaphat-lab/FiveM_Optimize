@@ -1377,17 +1377,21 @@ $BtnSplashClose.Add_Click({ $Global:SplashClosedByX = $true; $splashWindow.Close
 $BtnSplashMinimize.Add_Click({ $splashWindow.WindowState = 'Minimized' })
 $SplashTopBar.Add_MouseLeftButtonDown({ $splashWindow.DragMove() })
 
-$splashWindow.ShowDialog() | Out-Null
-
-if ($Global:SplashClosedByX) {
-    # User closed the splash screen with the X button - exit before the main console ever opens.
-    exit
-}
+# Skip splash - open main window directly.
+try { if($splashWindow){ $splashWindow.Close() } } catch {}
 
 
+try {
 [xml]$xaml = $mainXamlStr
 $reader = New-Object System.Xml.XmlNodeReader $xaml
 $window = [Windows.Markup.XamlReader]::Load($reader)
+} catch {
+    $err = $_.Exception.Message
+    $log = Join-Path $env:TEMP "FiveMOptimize-error.txt"
+    Set-Content -Path $log -Value $err -Encoding UTF8
+    try { [System.Windows.MessageBox]::Show($err + "`n`n" + $log, "FiveM Optimize") | Out-Null } catch { Write-Host $err; Start-Sleep 30 }
+    exit
+}
 
 $MainBgCanvas = $window.FindName("MainBgCanvas")
 $RootClipGeom = $window.FindName("RootClipGeom")
