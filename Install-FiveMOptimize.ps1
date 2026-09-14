@@ -56,7 +56,7 @@ try { Unblock-File -LiteralPath $target -ErrorAction SilentlyContinue } catch {}
 
 $pwsh = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
 Write-Host "Launching..." -ForegroundColor Cyan
-Start-Process -FilePath $pwsh -WorkingDirectory $installRoot -Verb RunAs -ArgumentList "-NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File `"$target`"" | Out-Null
+Start-Process -FilePath $pwsh -WorkingDirectory $installRoot -Verb RunAs -ArgumentList "-NoLogo -NoProfile -STA -NoExit -ExecutionPolicy Bypass -File `"$target`"" | Out-Null
 
 try { Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue } catch {}
 Write-Host "Done. If UAC appears, press Yes." -ForegroundColor Green
