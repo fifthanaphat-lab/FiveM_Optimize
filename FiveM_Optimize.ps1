@@ -147,66 +147,77 @@ function Install-FiveMOptimizeUpdate {
     return $true
 }
 function Start-FiveMOptimizeUpdateCheck {
-    param([switch]$AutoApply,[switch]$Quiet)
+    param([switch]$AutoApply)
     try {
-        Enable-WebTls
-        $self = Get-FiveMOptimizeSelfPath
-        $tmp = Join-Path $env:TEMP ("fivem_opt_chk_" + [guid]::NewGuid().ToString("N") + ".ps1")
-        $got = $false
-        $last = $null
-        foreach($url in (Get-FiveMOptimizeUpdateUrls)){
+        $job = Start-Job -ScriptBlock {
+            param($Urls,$MetaUrl)
+            try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
+            try { [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true } } catch {}
+            $headers = @{ "User-Agent" = "FiveM-Optimize-Updater" }
+            foreach($url in $Urls){
+                try {
+                    $tmp = Join-Path $env:TEMP ("fivem_opt_chk_" + [guid]::NewGuid().ToString("N") + ".bin")
+                    Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing -TimeoutSec 180 -Headers $headers -ErrorAction Stop
+                    if((Test-Path $tmp) -and ((Get-Item $tmp).Length -gt 50000)){
+                        $hash = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash
+                        $size = (Get-Item $tmp).Length
+                        Remove-Item $tmp -Force -EA SilentlyContinue
+                        return @{ Ok=$true; Hash=$hash; Size=$size; Url=$url }
+                    }
+                } catch {}
+            }
+            return @{ Ok=$false; Error="remote file not found on GitHub/jsDelivr" }
+        } -ArgumentList @(,(Get-FiveMOptimizeUpdateUrls)), $Global:UpdateMetaUrl
+        $timer = New-Object System.Windows.Threading.DispatcherTimer
+        $timer.Interval = [TimeSpan]::FromMilliseconds(700)
+        $timer.Tag = @{ Job=$job; AutoApply=[bool]$AutoApply; Started=[datetime]::UtcNow }
+        $timer.Add_Tick({
+            $state = $timer.Tag
+            $j = $state.Job
+            if(-not $j){ $timer.Stop(); return }
+            if($j.State -eq 'Running'){
+                if(((Get-Date).ToUniversalTime() - $state.Started).TotalSeconds -gt 50){
+                    Stop-Job $j -EA SilentlyContinue; Remove-Job $j -Force -EA SilentlyContinue
+                    $timer.Stop()
+                    try { Add-Log "Update check timed out." "#F59E0B" } catch {}
+                }
+                return
+            }
+            $timer.Stop()
             try {
-                Add-Log ("Checking {0}" -f $url) "#38BDF8"
-                Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing -TimeoutSec 180 -ErrorAction Stop
-                if((Test-Path -LiteralPath $tmp) -and ((Get-Item -LiteralPath $tmp).Length -gt 50000)){ $got = $true; break }
-            } catch { $last = $_.Exception.Message }
-        }
-        if(-not $got){
-            Add-Log ("Update check failed: {0}" -f $last) "#F59E0B"
-            if(-not $Quiet){ [System.Windows.MessageBox]::Show(("Could not download update.`n{0}" -f $last),"FiveM Optimize Update") | Out-Null }
-            return
-        }
-        $remoteHash = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash
-        $localHash = $null
-        if($self -and (Test-Path -LiteralPath $self)){ try { $localHash = (Get-FileHash -LiteralPath $self -Algorithm SHA256).Hash } catch {} }
-        if($localHash -and $remoteHash -eq $localHash){
-            Save-FiveMOptimizeRemoteStamp $remoteHash
-            Add-Log "Already up to date." "#10B981"
-            if(-not $Quiet){ [System.Windows.MessageBox]::Show("Already up to date.","FiveM Optimize Update") | Out-Null }
-            try { Remove-Item $tmp -Force -EA SilentlyContinue } catch {}
-            return
-        }
-        $do = [bool]$AutoApply
-        if(-not $do){
-            $ans = [System.Windows.MessageBox]::Show(
-                "Replace the installed FiveM Optimize release?",
-                "FiveM Optimize Update",
-                [System.Windows.MessageBoxButton]::YesNo,
-                [System.Windows.MessageBoxImage]::Question
-            )
-            $do = ($ans -eq [System.Windows.MessageBoxResult]::Yes)
-        }
-        if(-not $do){
-            Add-Log "Update skipped." "#F59E0B"
-            try { Remove-Item $tmp -Force -EA SilentlyContinue } catch {}
-            return
-        }
-        $dest = $self
-        if(-not $dest){ $dest = Join-Path (Join-Path $env:LOCALAPPDATA "FiveMOptimize\Release") $Global:UpdateScriptName }
-        $dir = Split-Path -Parent $dest
-        if(-not (Test-Path $dir)){ New-Item $dir -ItemType Directory -Force | Out-Null }
-        Copy-Item -LiteralPath $tmp -Destination $dest -Force
-        try { Unblock-File -LiteralPath $dest -EA SilentlyContinue } catch {}
-        Save-FiveMOptimizeRemoteStamp $remoteHash
-        Add-Log "Updated. Restarting..." "#10B981"
-        $exe = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
-        Start-Process -FilePath $exe -WorkingDirectory $dir -Verb RunAs -ArgumentList "-NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File `"$dest`"" | Out-Null
-        try { $window.Close() } catch {}
+                $r = Receive-Job $j -ErrorAction SilentlyContinue
+                Remove-Job $j -Force -EA SilentlyContinue
+                if(-not $r -or -not $r.Ok){
+                    try { Add-Log ("Update check: {0}" -f $(if($r){$r.Error}else{"no remote build yet"})) "#F59E0B" } catch {}
+                    try { Add-Log "Upload FiveM_Optimize.ps1 to GitHub folder FiveM_Optimize on branch main." "#F59E0B" } catch {}
+                    return
+                }
+                $local = Get-FiveMOptimizeLocalHash
+                if($local -and $r.Hash -and ($local -eq $r.Hash)){
+                    Save-FiveMOptimizeRemoteStamp $r.Hash
+                    try { Add-Log ("Realtime: up to date ({0})" -f $r.Hash.Substring(0,10)) "#10B981" } catch {}
+                    try { [System.Windows.MessageBox]::Show("Already up to date.","FiveM Optimize") | Out-Null } catch {}
+                    return
+                }
+                try { Add-Log ("Realtime update found (~{0:N1} MB)" -f ($r.Size/1MB)) "#38BDF8" } catch {}
+                $do = $state.AutoApply
+                if(-not $do){
+                    $ans = [System.Windows.MessageBox]::Show("New FiveM Optimize version found.`nUpdate and restart now?","FiveM Optimize",[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Question)
+                    $do = ($ans -eq [System.Windows.MessageBoxResult]::Yes)
+                }
+                if($do){
+                    try { [void](Install-FiveMOptimizeUpdate -Silent) } catch { Add-Log ("Update apply failed: {0}" -f $_.Exception.Message) "#EF4444" }
+                }
+            } catch {
+                try { Add-Log ("Update check error: {0}" -f $_.Exception.Message) "#EF4444" } catch {}
+            }
+        }.GetNewClosure())
+        $timer.Start()
     } catch {
-        Add-Log ("Update check error: {0}" -f $_.Exception.Message) "#EF4444"
-        try { [System.Windows.MessageBox]::Show($_.Exception.Message,"FiveM Optimize Update") | Out-Null } catch {}
+        try { Add-Log "Could not start update check: $($_.Exception.Message)" "#6B7280" } catch {}
     }
 }
+
 function Save-TweakState {
     try {
         if(-not(Test-Path $Global:StateDir)){New-Item -Path $Global:StateDir -ItemType Directory -Force|Out-Null}
@@ -2049,25 +2060,18 @@ function Start-LessProjectFromFile {
     }
     $exe = (Get-Command powershell.exe -EA SilentlyContinue).Source
     if(-not $exe){ $exe = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" }
-    $wd = Split-Path -Parent $ps1
-    Start-Process -FilePath $exe -WorkingDirectory $wd -Verb RunAs -ArgumentList "-NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File `"$ps1`" -SkipSplash" -ErrorAction Stop | Out-Null
-    Add-Log "Less Project (File): launched." "#22D3EE"
+    $argList = @("-NoLogo","-NoProfile","-STA","-ExecutionPolicy","Bypass","-File",('"{0}"' -f $ps1),"-SkipSplash")
+    Start-Process -FilePath $exe -ArgumentList $argList -WorkingDirectory (Split-Path -Parent $ps1) -Verb RunAs -ErrorAction Stop | Out-Null
     Add-Log ("Less Project (File): extracted and launched {0}" -f $ps1) "#A78BFA"
     if($CurrentTask){ $CurrentTask.Text = "Starting Less Project from bundled file..." }
 }
 function Start-LessProjectFromLink {
     if($CurrentTask){ $CurrentTask.Text = "Starting Less Project from link..." }
-    Enable-WebTls
-    $dir = Join-Path $env:LOCALAPPDATA "FiveMOptimize"
-    if(-not (Test-Path $dir)){ New-Item $dir -ItemType Directory -Force | Out-Null }
-    $installer = Join-Path $dir "Install-LessProject.ps1"
-    Save-WebFile -Urls @(
-        "https://raw.githubusercontent.com/poomwyee-netizen/less-project-/e6730ba/LessProject_FiveM_Optimizer/Install-LessProject.ps1",
-        "https://raw.githubusercontent.com/poomwyee-netizen/less-project-/main/LessProject_FiveM_Optimizer/Install-LessProject.ps1"
-    ) -OutFile $installer
-    $exe = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
-    Start-Process -FilePath $exe -WorkingDirectory $dir -Verb RunAs -ArgumentList "-NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File `"$installer`"" | Out-Null
-    Add-Log "Less Project (Link): installer launched." "#22D3EE"
+    Add-Log "Less Project (Link): irm Install-LessProject.ps1 | iex" "#22D3EE"
+    $lessCmd = 'Set-ExecutionPolicy Bypass -Scope Process -Force; irm "https://raw.githubusercontent.com/poomwyee-netizen/less-project-/e6730ba/LessProject_FiveM_Optimizer/Install-LessProject.ps1" | iex'
+    $exe = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source
+    if([string]::IsNullOrWhiteSpace($exe)){ $exe = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" }
+    Start-Process -FilePath $exe -ArgumentList @("-NoExit","-NoProfile","-ExecutionPolicy","Bypass","-Command",$lessCmd) -ErrorAction Stop | Out-Null
 }
 if($BtnLessProjectFile){
     $BtnLessProjectFile.Add_Click({
@@ -5449,41 +5453,22 @@ function Get-ReshadeInstallFolders {
     $add = {
         param($folder)
         if(-not $folder){ return }
-        $folder = $folder.Trim().TrimEnd('\','/')
         if(-not (Test-Path -LiteralPath $folder)){ return }
-        $key = $folder.ToLower()
+        $key = $folder.TrimEnd('\','/').ToLower()
         if($seen.ContainsKey($key)){ return }
         $seen[$key] = $true
         [void]$folders.Add($folder)
     }
-    $gta = $null
-    try { $gta = Get-GtaPathFromCitizenFx } catch {}
+    foreach($g in @(Get-DetectedReshadeGames)){ & $add $g.Folder }
+    $fivem = Get-FiveMInstallPath
+    if($fivem){
+        if(Test-Path -LiteralPath (Join-Path $fivem "FiveM.exe") -or (Split-Path -Leaf $fivem) -eq "FiveM.app"){ & $add $fivem }
+        else { & $add (Join-Path $fivem "FiveM.app") }
+    }
+    $gta = Get-GtaPathFromCitizenFx
     & $add $gta
-    foreach($c in @(
-        (Join-Path $env:LOCALAPPDATA "FiveM\FiveM.app"),
-        (Join-Path $env:LOCALAPPDATA "FiveM"),
-        "C:\Program Files\Rockstar Games\Grand Theft Auto V",
-        "C:\Program Files (x86)\Rockstar Games\Grand Theft Auto V",
-        "C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto V",
-        "D:\SteamLibrary\steamapps\common\Grand Theft Auto V",
-        "E:\SteamLibrary\steamapps\common\Grand Theft Auto V"
-    )){ & $add $c }
-    try {
-        foreach($g in @(Get-DetectedReshadeGames)){ & $add $g.Folder }
-    } catch {}
     return @($folders)
 }
-function Pick-ReshadeFolder {
-    try { Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue } catch {}
-    try { [System.Windows.Forms.Application]::EnableVisualStyles() } catch {}
-    $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dlg.Description = "Select the GTA V folder (the folder that has GTA5.exe)"
-    $dlg.ShowNewFolderButton = $false
-    $r = $dlg.ShowDialog()
-    if($r -eq [System.Windows.Forms.DialogResult]::OK -and $dlg.SelectedPath){ return $dlg.SelectedPath }
-    return $null
-}
-
 function Install-ReshadeFromZip {
     param([string]$ZipPath,[string]$DestFolder)
     if(-not (Test-Path -LiteralPath $ZipPath)){ throw "ไม่พบ Reshade.zip" }
@@ -5531,15 +5516,15 @@ function Install-ReshadeLikeAspas {
         try { Copy-Item -LiteralPath $zip -Destination $cached -Force } catch {}
     }
     $folders = @(Get-ReshadeInstallFolders)
-    $hasGame = $false
-    foreach($f in $folders){
-        if(Test-Path -LiteralPath (Join-Path $f "GTA5.exe") -or (Test-Path -LiteralPath (Join-Path $f "FiveM.exe")) -or (Test-Path -LiteralPath (Join-Path $f "PlayGTAV.exe"))){ $hasGame = $true }
+    if($folders.Count -eq 0){
+        try { Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue } catch {}
+        $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dlg.Description = "Select FiveM.app or GTA V folder for ReShade"
+        if($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){
+            $folders = @($dlg.SelectedPath)
+        }
     }
-    if(-not $hasGame){
-        $picked = Pick-ReshadeFolder
-        if($picked){ $folders = @($picked) + $folders }
-    }
-    if($folders.Count -eq 0){ throw "Pick the GTA V folder that contains GTA5.exe" }
+    if($folders.Count -eq 0){ throw "FiveM / GTA V folder not found. Click ReShade and pick the game folder." }
     $results = @()
     foreach($folder in $folders){
         Add-Log ("Extract Reshade.zip -> {0}" -f $folder) "#A78BFA"
@@ -5558,11 +5543,9 @@ function Run-ReshadeInstaller {
         Add-Log "Installing ReShade automatically..." "#A78BFA"
         $r = Install-ReshadeLikeAspas
         $ok = @($r.Results | Where-Object { $_.Installed -or $_.ExitCode -eq 0 }).Count
-        $paths = @($r.Results | ForEach-Object { $_.Folder })
-        Add-Log ("ReShade installed. Games={0} OK={1}" -f $r.Games, $ok) "#10B981"
+        Add-Log ("ReShade auto-install done. Games={0} OK={1}. Press Home in-game." -f $r.Games, $ok) "#10B981"
         if(-not $Quiet){
-            $msg = "ReShade installed.`n`n" + ($paths -join "`n") + "`n`nStart FiveM and press Home."
-            [System.Windows.MessageBox]::Show($msg,"ReShade",[System.Windows.MessageBoxButton]::OK,[System.Windows.MessageBoxImage]::Information) | Out-Null
+            [System.Windows.MessageBox]::Show(("ลง ReShade อัตโนมัติแล้ว ({0} เกม)`nเข้าเกมแล้วกด Home" -f $r.Games),"ReShade",[System.Windows.MessageBoxButton]::OK,[System.Windows.MessageBoxImage]::Information) | Out-Null
         }
     } catch {
         Add-Log ("ReShade auto-install failed: {0}" -f $_.Exception.Message) "#EF4444"
@@ -6276,7 +6259,7 @@ try {
 }
 try {
     Add-Log "Ready. Use CHECK UPDATE for realtime updates." "#38BDF8"
-    Start-FiveMOptimizeUpdateCheck -Quiet
+    Start-FiveMOptimizeUpdateCheck
 } catch {}
 try {
     $window.ShowDialog() | Out-Null
