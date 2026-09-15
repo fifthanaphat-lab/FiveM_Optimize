@@ -5449,22 +5449,41 @@ function Get-ReshadeInstallFolders {
     $add = {
         param($folder)
         if(-not $folder){ return }
+        $folder = $folder.Trim().TrimEnd('\','/')
         if(-not (Test-Path -LiteralPath $folder)){ return }
-        $key = $folder.TrimEnd('\','/').ToLower()
+        $key = $folder.ToLower()
         if($seen.ContainsKey($key)){ return }
         $seen[$key] = $true
         [void]$folders.Add($folder)
     }
-    foreach($g in @(Get-DetectedReshadeGames)){ & $add $g.Folder }
-    $fivem = Get-FiveMInstallPath
-    if($fivem){
-        if(Test-Path -LiteralPath (Join-Path $fivem "FiveM.exe") -or (Split-Path -Leaf $fivem) -eq "FiveM.app"){ & $add $fivem }
-        else { & $add (Join-Path $fivem "FiveM.app") }
-    }
-    $gta = Get-GtaPathFromCitizenFx
+    $gta = $null
+    try { $gta = Get-GtaPathFromCitizenFx } catch {}
     & $add $gta
+    foreach($c in @(
+        (Join-Path $env:LOCALAPPDATA "FiveM\FiveM.app"),
+        (Join-Path $env:LOCALAPPDATA "FiveM"),
+        "C:\Program Files\Rockstar Games\Grand Theft Auto V",
+        "C:\Program Files (x86)\Rockstar Games\Grand Theft Auto V",
+        "C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto V",
+        "D:\SteamLibrary\steamapps\common\Grand Theft Auto V",
+        "E:\SteamLibrary\steamapps\common\Grand Theft Auto V"
+    )){ & $add $c }
+    try {
+        foreach($g in @(Get-DetectedReshadeGames)){ & $add $g.Folder }
+    } catch {}
     return @($folders)
 }
+function Pick-ReshadeFolder {
+    try { Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue } catch {}
+    try { [System.Windows.Forms.Application]::EnableVisualStyles() } catch {}
+    $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+    $dlg.Description = "Select the GTA V folder (the folder that has GTA5.exe)"
+    $dlg.ShowNewFolderButton = $false
+    $r = $dlg.ShowDialog()
+    if($r -eq [System.Windows.Forms.DialogResult]::OK -and $dlg.SelectedPath){ return $dlg.SelectedPath }
+    return $null
+}
+
 function Install-ReshadeFromZip {
     param([string]$ZipPath,[string]$DestFolder)
     if(-not (Test-Path -LiteralPath $ZipPath)){ throw "ไม่พบ Reshade.zip" }
@@ -5512,15 +5531,15 @@ function Install-ReshadeLikeAspas {
         try { Copy-Item -LiteralPath $zip -Destination $cached -Force } catch {}
     }
     $folders = @(Get-ReshadeInstallFolders)
-    if($folders.Count -eq 0){
-        try { Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue } catch {}
-        $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-        $dlg.Description = "Select FiveM.app or GTA V folder for ReShade"
-        if($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){
-            $folders = @($dlg.SelectedPath)
-        }
+    $hasGame = $false
+    foreach($f in $folders){
+        if(Test-Path -LiteralPath (Join-Path $f "GTA5.exe") -or (Test-Path -LiteralPath (Join-Path $f "FiveM.exe")) -or (Test-Path -LiteralPath (Join-Path $f "PlayGTAV.exe"))){ $hasGame = $true }
     }
-    if($folders.Count -eq 0){ throw "FiveM / GTA V folder not found. Click ReShade and pick the game folder." }
+    if(-not $hasGame){
+        $picked = Pick-ReshadeFolder
+        if($picked){ $folders = @($picked) + $folders }
+    }
+    if($folders.Count -eq 0){ throw "Pick the GTA V folder that contains GTA5.exe" }
     $results = @()
     foreach($folder in $folders){
         Add-Log ("Extract Reshade.zip -> {0}" -f $folder) "#A78BFA"
@@ -5539,9 +5558,11 @@ function Run-ReshadeInstaller {
         Add-Log "Installing ReShade automatically..." "#A78BFA"
         $r = Install-ReshadeLikeAspas
         $ok = @($r.Results | Where-Object { $_.Installed -or $_.ExitCode -eq 0 }).Count
-        Add-Log ("ReShade auto-install done. Games={0} OK={1}. Press Home in-game." -f $r.Games, $ok) "#10B981"
+        $paths = @($r.Results | ForEach-Object { $_.Folder })
+        Add-Log ("ReShade installed. Games={0} OK={1}" -f $r.Games, $ok) "#10B981"
         if(-not $Quiet){
-            [System.Windows.MessageBox]::Show(("ลง ReShade อัตโนมัติแล้ว ({0} เกม)`nเข้าเกมแล้วกด Home" -f $r.Games),"ReShade",[System.Windows.MessageBoxButton]::OK,[System.Windows.MessageBoxImage]::Information) | Out-Null
+            $msg = "ReShade installed.`n`n" + ($paths -join "`n") + "`n`nStart FiveM and press Home."
+            [System.Windows.MessageBox]::Show($msg,"ReShade",[System.Windows.MessageBoxButton]::OK,[System.Windows.MessageBoxImage]::Information) | Out-Null
         }
     } catch {
         Add-Log ("ReShade auto-install failed: {0}" -f $_.Exception.Message) "#EF4444"
