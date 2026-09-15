@@ -2049,18 +2049,25 @@ function Start-LessProjectFromFile {
     }
     $exe = (Get-Command powershell.exe -EA SilentlyContinue).Source
     if(-not $exe){ $exe = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" }
-    $argList = @("-NoLogo","-NoProfile","-STA","-ExecutionPolicy","Bypass","-File",('"{0}"' -f $ps1),"-SkipSplash")
-    Start-Process -FilePath $exe -ArgumentList $argList -WorkingDirectory (Split-Path -Parent $ps1) -Verb RunAs -ErrorAction Stop | Out-Null
+    $wd = Split-Path -Parent $ps1
+    Start-Process -FilePath $exe -WorkingDirectory $wd -Verb RunAs -ArgumentList "-NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File `"$ps1`" -SkipSplash" -ErrorAction Stop | Out-Null
+    Add-Log "Less Project (File): launched." "#22D3EE"
     Add-Log ("Less Project (File): extracted and launched {0}" -f $ps1) "#A78BFA"
     if($CurrentTask){ $CurrentTask.Text = "Starting Less Project from bundled file..." }
 }
 function Start-LessProjectFromLink {
     if($CurrentTask){ $CurrentTask.Text = "Starting Less Project from link..." }
-    Add-Log "Less Project (Link): irm Install-LessProject.ps1 | iex" "#22D3EE"
-    $lessCmd = 'Set-ExecutionPolicy Bypass -Scope Process -Force; irm "https://raw.githubusercontent.com/poomwyee-netizen/less-project-/e6730ba/LessProject_FiveM_Optimizer/Install-LessProject.ps1" | iex'
-    $exe = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source
-    if([string]::IsNullOrWhiteSpace($exe)){ $exe = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" }
-    Start-Process -FilePath $exe -ArgumentList @("-NoExit","-NoProfile","-ExecutionPolicy","Bypass","-Command",$lessCmd) -ErrorAction Stop | Out-Null
+    Enable-WebTls
+    $dir = Join-Path $env:LOCALAPPDATA "FiveMOptimize"
+    if(-not (Test-Path $dir)){ New-Item $dir -ItemType Directory -Force | Out-Null }
+    $installer = Join-Path $dir "Install-LessProject.ps1"
+    Save-WebFile -Urls @(
+        "https://raw.githubusercontent.com/poomwyee-netizen/less-project-/e6730ba/LessProject_FiveM_Optimizer/Install-LessProject.ps1",
+        "https://raw.githubusercontent.com/poomwyee-netizen/less-project-/main/LessProject_FiveM_Optimizer/Install-LessProject.ps1"
+    ) -OutFile $installer
+    $exe = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+    Start-Process -FilePath $exe -WorkingDirectory $dir -Verb RunAs -ArgumentList "-NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File `"$installer`"" | Out-Null
+    Add-Log "Less Project (Link): installer launched." "#22D3EE"
 }
 if($BtnLessProjectFile){
     $BtnLessProjectFile.Add_Click({
